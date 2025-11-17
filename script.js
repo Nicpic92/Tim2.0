@@ -29,7 +29,8 @@ var dataStore = {
 };
 var nextIds = { teams: 1, categories: 1, configs: 1, associations: 1 };
 
-const STORAGE_KEY = 'claimsDashboardData';
+// Key used for local persistence (browser storage)
+const STORAGE_KEY = 'claimsDashboardData'; 
 
 // --- GLOBAL APP STATE ---
 var currentClaimsData = [];
@@ -53,24 +54,75 @@ var associationManager = {
     isSaving: false,
 };
 
+// Function to fetch the initial master data from the uploaded JSON file
+async function fetchMasterData() {
+    try {
+        // Fetch dataStore.json relative to the index.html path
+        const response = await fetch('./dataStore.json');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.warn("Could not fetch master dataStore.json. Starting with empty data.", error);
+        // Return an empty structure if the file isn't found or readable
+        return {
+            teams: [],
+            categories: [],
+            configs: [],
+            claim_edit_rules: [],
+            claim_note_rules: [],
+            client_team_associations: [],
+            team_report_configurations: [],
+        };
+    }
+}
 
-function loadDataStore() {
+// Function to load the application state (Master + Local Overrides)
+async function loadDataStore() {
+    // 1. Fetch the master data (our initial baseline)
+    const masterData = await fetchMasterData();
+    Object.assign(dataStore, masterData);
+
+    // 2. Overwrite/merge with local changes (user's progress)
     const storedData = localStorage.getItem(STORAGE_KEY);
     if (storedData) {
-        dataStore = JSON.parse(storedData);
-        dataStore.client_team_associations = dataStore.client_team_associations || [];
-        
-        ['teams', 'categories', 'configs', 'associations'].forEach(key => {
-            const list = dataStore[key] || [];
-            nextIds[key] = list.length > 0 ? Math.max(...list.map(item => item.id)) + 1 : 1;
-        });
+        const localData = JSON.parse(storedData);
+        // Overwrite top-level arrays from local storage
+        Object.assign(dataStore, localData);
     }
-    console.log("Data Store Loaded: Object", dataStore);
+    
+    // Ensure arrays exist and reset next IDs
+    dataStore.client_team_associations = dataStore.client_team_associations || [];
+    
+    // 3. Recalculate next IDs based on the final merged data
+    ['teams', 'categories', 'configs', 'associations'].forEach(key => {
+        const list = dataStore[key] || [];
+        nextIds[key] = list.length > 0 ? Math.max(...list.map(item => item.id)) + 1 : 1;
+    });
+    
+    console.log("Data Store Loaded and Merged: Object", dataStore);
 }
 
 function saveDataStore() {
+    // We only save the current working state (dataStore) to localStorage
     localStorage.setItem(STORAGE_KEY, JSON.stringify(dataStore));
-    console.log("Data Store Saved.");
+    console.log("Data Store Saved to localStorage.");
+}
+
+// --- ADMIN FUNCTIONALITY FOR OFFLINE DEPLOYMENT ---
+function exportDataStore() {
+    const dataStr = JSON.stringify(dataStore, null, 4);
+    const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(dataStr);
+
+    const exportFileDefaultName = 'dataStore_export.json';
+
+    const linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.click();
+
+    apiService.notify("Data exported! Replace 'dataStore.json' in Git with the downloaded file to save permanent changes.", 'info');
 }
 
 // --- CLAIM SERVICE (BUSINESS LOGIC) ---
@@ -211,7 +263,7 @@ const apiService = {
     getCategories: () => {
         const categories = dataStore.categories.map(cat => {
             const team = dataStore.teams.find(t => t.id === cat.team_id);
-            // FIXED: Ensure team_name is correctly injected into the category object
+            // Ensure team_name is correctly injected into the category object
             return { ...cat, team_name: team ? team.team_name : 'Unassigned' };
         }).sort((a, b) => a.category_name.localeCompare(b.category_name));
         return Promise.resolve(categories);
@@ -395,9 +447,22 @@ function handleEditConfigClick(configId) {
     }
 }
 
+// Global function required for inline 'onchange' handler in HTML template
+async function handleCategoryTeamUpdate(categoryId, newTeamId) {
+    try {
+        const teamId = newTeamId ? parseInt(newTeamId, 10) : null;
+        await apiService.updateCategory(categoryId, { team_id: teamId });
+        apiService.notify('Category team updated successfully!', 'success');
+        // Re-render the admin page to update the Category Manager UI
+        await renderAdminPage(document.getElementById('content-area'));
+    } catch (error) {
+        apiService.notify(error.message || 'Failed to update category team.', 'danger');
+    }
+}
+
 window.addEventListener('hashchange', renderApp);
-window.addEventListener('DOMContentLoaded', () => {
-    loadDataStore();
+window.addEventListener('DOMContentLoaded', async () => {
+    await loadDataStore(); // Use await here for the master data fetch
     renderApp();
 });
 
@@ -441,7 +506,7 @@ async function handleAssociationSave() {
 
     associationManager.isSaving = true;
     renderAdminPage(document.getElementById('content-area'));
-    const toastId = apiService.notify('Saving associations...', 'info');
+    apiService.notify('Saving associations...', 'info');
 
     try {
         const payload = {
@@ -454,7 +519,6 @@ async function handleAssociationSave() {
         apiService.notify(error.message || 'Failed to save associations.', 'danger');
     } finally {
         associationManager.isSaving = false;
-        // The original code tried to dismiss a toast with a placeholder ID, removing that call to prevent errors.
         renderAdminPage(document.getElementById('content-area'));
     }
 }
@@ -474,7 +538,7 @@ function activateTab(button) {
     const targetPane = document.querySelector(targetId);
     if (targetPane) {
         targetPane.classList.add('active', 'show');
-        // FIXED: Force re-render of Rule Discovery content when activated
+        // Force re-render of Rule Discovery content when activated
         if (targetId === '#discover-pane') {
             renderRuleDiscoveryManager(dataStore.configs, dataStore.categories, true);
         }
@@ -508,7 +572,7 @@ async function handleProcessDiscoveryFile(file) {
 
     ruleDiscoveryState.isProcessingFile = true;
     renderRuleDiscoveryManager(dataStore.configs, dataStore.categories, true);
-    const toastId = apiService.notify('Analyzing report for new rules...', 'info');
+    apiService.notify('Analyzing report for new rules...', 'info');
 
     try {
         const data = await fileService.parseXlsxFile(file);
@@ -546,7 +610,6 @@ async function handleProcessDiscoveryFile(file) {
         apiService.notify(error.message || 'Failed to process file.', 'danger');
     } finally {
         ruleDiscoveryState.isProcessingFile = false;
-        // The original code tried to dismiss a toast with a placeholder ID, removing that call to prevent errors.
         renderRuleDiscoveryManager(dataStore.configs, dataStore.categories, true);
     }
 }
@@ -573,7 +636,7 @@ async function handleSaveNewRules() {
 
     ruleDiscoveryState.isSaving = true;
     renderRuleDiscoveryManager(dataStore.configs, dataStore.categories, true);
-    const toastId = apiService.notify('Saving new rules...', 'info');
+    apiService.notify('Saving new rules...', 'info');
 
     try {
         const promises = [];
@@ -594,21 +657,7 @@ async function handleSaveNewRules() {
         apiService.notify(error.message || 'Failed to save rules.', 'danger');
     } finally {
         ruleDiscoveryState.isSaving = false;
-        // The original code tried to dismiss a toast with a placeholder ID, removing that call to prevent errors.
         renderRuleDiscoveryManager(dataStore.configs, dataStore.categories, true);
-    }
-}
-
-// Global function required for inline 'onchange' handler in HTML template
-async function handleCategoryTeamUpdate(categoryId, newTeamId) {
-    try {
-        const teamId = newTeamId ? parseInt(newTeamId, 10) : null;
-        await apiService.updateCategory(categoryId, { team_id: teamId });
-        apiService.notify('Category team updated successfully!', 'success');
-        // Re-render the admin page to update the Category Manager UI
-        await renderAdminPage(document.getElementById('content-area'));
-    } catch (error) {
-        apiService.notify(error.message || 'Failed to update category team.', 'danger');
     }
 }
 
@@ -984,6 +1033,17 @@ async function renderAdminPage(container) {
 
     container.innerHTML = `
         <h1 class="mb-4">Admin Console</h1>
+        
+        <div class="alert alert-warning d-flex justify-content-between align-items-center">
+            <span>
+                ⚠️ **Offline Mode:** Data changes are saved to your browser (localStorage). 
+                Click the button to download the master JSON file to commit permanent changes to Git.
+            </span>
+            <button onclick="exportDataStore()" class="btn btn-warning btn-sm fw-bold ms-3">
+                <i class="bi bi-download"></i> Export Master JSON
+            </button>
+        </div>
+
         <div class="row g-5">
             <div class="col-12">
                 <div id="client-config-manager-area"></div>

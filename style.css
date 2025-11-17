@@ -1,0 +1,29 @@
+/* Minimal custom styling */
+body { 
+    background-color: #f8f9fa; 
+}
+.main-content { 
+    min-height: 80vh; 
+}
+.claims-header { 
+    color: #0d6efd; 
+}
+.table-primary-header { 
+    background-color: #005A9C !important; 
+    color: white; 
+}
+.config-form-container { 
+    background: white; 
+    padding: 20px; 
+    border-radius: 8px; 
+    box-shadow: 0 0 10px rgba(0,0,0,0.05); 
+}
+.discovery-table-container { 
+    max-height: 350px; 
+    overflow-y: auto; 
+}
+.loading-spinner-sm { 
+    width: 1.2rem; 
+    height: 1.2rem; 
+    margin-right: 5px; 
+}
